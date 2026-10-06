@@ -240,6 +240,7 @@ def analyze(source: str) -> GilbResult:
     cli = 0
     if_count = elsif_count = unless_count = 0
     loop_count = case_count = when_count = ternary_count = 0
+    for_count = loop_ignored = 0
 
     cond_depth = 0            # текущий уровень вложенности (0 — верхний)
     stack: List[_Frame] = []
@@ -306,7 +307,7 @@ def analyze(source: str) -> GilbResult:
             stack.append(_Frame("if", cond_depth))
             cond_depth = level + 1
             continue
-        if word in ("while", "until", "for"):
+        if word in ("while", "until"):
             level = cond_depth
             cl += 1
             loop_count += 1
@@ -314,13 +315,23 @@ def analyze(source: str) -> GilbResult:
             stack.append(_Frame("loop", cond_depth))
             cond_depth = level + 1
             continue
-        if word == "loop":                               # loop do … end
+        if word == "for":
             level = cond_depth
             cl += 1
             loop_count += 1
+            for_count += 1
+            # у цикла for инициализация переменной и её инкремент — это два
+            # отдельных оператора-инструкции (учитываются в N, но не в CL)
+            simple += 2
             note_level(level)
             stack.append(_Frame("loop", cond_depth))
             cond_depth = level + 1
+            continue
+        if word == "loop":                               # loop do … end
+            # loop НЕ считается оператором: не входит ни в N, ни в CL, ни в CLI.
+            # Это структурный блок — учитываем только для баланса end.
+            loop_ignored += 1
+            stack.append(_Frame("struct", cond_depth))
             continue
         # case может быть как отдельной строкой (case / case x), так и
         # выражением-присваиванием (grade = case ... when ... end).
@@ -403,12 +414,16 @@ def analyze(source: str) -> GilbResult:
     res.breakdown = [
         BreakdownEntry("if", if_count, if_count, "ветвление"),
         BreakdownEntry("elsif", elsif_count, elsif_count, "ветка условия (else не считается)"),
-        BreakdownEntry("unless", unless_count, unless_count, "ветвление"),
-        BreakdownEntry("циклы (while/until/for/loop/итераторы)", loop_count, loop_count, "цикл"),
+        BreakdownEntry("unless", unless_count, unless_count, "условие; инструкция перед ним — отдельный оператор"),
+        BreakdownEntry("циклы while / until / for", loop_count, loop_count, "цикл"),
+        BreakdownEntry("for: инициализация + инкремент", for_count * 2, 0,
+                       "по 2 доп. оператора на каждый for (входят в N)"),
+        BreakdownEntry("loop", loop_ignored, 0, "НЕ считается оператором (ни в N, ни в CL)"),
         BreakdownEntry("case", case_count, 0, "сам оператор выбора"),
         BreakdownEntry("when (ветки case)", when_count, when_count, "каждая ветка when; else не считается"),
         BreakdownEntry("тернарный ?:", ternary_count, ternary_count, ""),
-        BreakdownEntry("прочие операторы-инструкции", simple, 0, "не условные; входят только в N"),
+        BreakdownEntry("прочие операторы-инструкции", simple - for_count * 2, 0,
+                       "не условные; входят только в N"),
     ]
     return res
 
